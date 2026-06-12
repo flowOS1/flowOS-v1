@@ -65,6 +65,18 @@ function formatGenre(genre) {
   return genre.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
+function formatSessionDate(timestamp) {
+  const d = new Date(timestamp);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (isToday) return `Today, ${time}`;
+  if (isYesterday) return `Yesterday, ${time}`;
+  return `${d.toLocaleDateString([], { weekday: "short" })}, ${time}`;
+}
+
 const C = {
   bg:"#f7f3ee", surface:"#ede8e1", border:"#ddd6cc", borderSoft:"#e8e2da",
   text:"#2c2520", textMid:"#7a6e65", textSoft:"#a89f96",
@@ -115,6 +127,8 @@ export default function FlowOS() {
   const [userProfile, setProfile]   = useState(null);
   const [onboarded, setOnboarded]   = useState(false);
   const [copied, setCopied]         = useState(false);
+  const [recentTrack, setRecent]    = useState(null);
+  const [showSettings, setSettings] = useState(false);
   const timerRef = useRef(null);
   const pollRef  = useRef(null);
 
@@ -161,11 +175,29 @@ export default function FlowOS() {
         const title = data.item.name;
         const artist = data.item.artists.map(a => a.name).join(", ");
         const uri = data.item.uri;
+        setRecent(null);
         // Set track immediately with placeholder genre, then update once fetched
         setTrack(prev => ({ title, artist, cover, genre: prev.uri === uri ? prev.genre : "", uri }));
         const genre = await getGenreForArtist(artistId);
         setTrack(prev => prev.uri === uri ? { ...prev, genre: formatGenre(genre) } : prev);
-      } else { setTrack(EMPTY_TRACK); }
+      } else {
+        setTrack(EMPTY_TRACK);
+        // Fetch most recently played track as a fallback
+        const recent = await spotifyFetch("/me/player/recently-played?limit=1");
+        const item = recent?.items?.[0]?.track;
+        if (item) {
+          const artistId = item.artists?.[0]?.id;
+          const genre = await getGenreForArtist(artistId);
+          setRecent({
+            title: item.name,
+            artist: item.artists.map(a => a.name).join(", "),
+            cover: item.album.images[1]?.url || item.album.images[0]?.url,
+            genre: formatGenre(genre),
+            uri: item.uri,
+            playedAt: recent.items[0].played_at,
+          });
+        }
+      }
     };
     fetch();
     pollRef.current = setInterval(fetch, 5000);
@@ -183,12 +215,23 @@ export default function FlowOS() {
   const endSession = () => { setSession(false); setCheckin(true); };
 
   const submitRating = () => {
-    const newSession = { id:Date.now(), date:"Just now", track:currentTrack, duration:fmt(elapsed), rating:checkinRating, ratingLabel:RATING_CONFIG[checkinRating]?.label };
+    const newSession = { id:Date.now(), timestamp:Date.now(), track:currentTrack, duration:fmt(elapsed), rating:checkinRating, ratingLabel:RATING_CONFIG[checkinRating]?.label };
     const updated = [newSession, ...sessions];
     setSessions(updated);
     saveSessions(updated);
     setJustSaved(true);
     setTimeout(() => { setCheckin(false); setRating(null); setElapsed(0); setJustSaved(false); setTab("sessions"); }, 1300);
+  };
+
+  const deleteSession = (id) => {
+    const updated = sessions.filter(s => s.id !== id);
+    setSessions(updated);
+    saveSessions(updated);
+  };
+
+  const logRecentTrack = () => {
+    setTrack(recentTrack);
+    setCheckin(true);
   };
 
   const logout = () => { localStorage.clear(); setScreen("connect"); clearInterval(pollRef.current); };
@@ -384,6 +427,29 @@ export default function FlowOS() {
               </button>
             )}
           </div>
+
+          {/* Recently played fallback */}
+          {!sessionActive && currentTrack.title === "Nothing playing" && recentTrack && (
+            <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${C.borderSoft}` }}>
+              <div style={{ fontSize:10, letterSpacing:2, color:C.textSoft, textTransform:"uppercase", fontWeight:600, marginBottom:10 }}>
+                Last played
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+                {recentTrack.cover
+                  ? <img src={recentTrack.cover} style={{ width:36, height:36, borderRadius:8, objectFit:"cover" }} alt="" />
+                  : <div style={{ fontSize:18 }}>🎵</div>
+                }
+                <div style={{ minWidth:0 }}>
+                  <div style={{ fontFamily:font, fontWeight:600, fontSize:13, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{recentTrack.title}</div>
+                  <div style={{ color:C.textSoft, fontSize:11, marginTop:1 }}>{recentTrack.artist}</div>
+                </div>
+              </div>
+              <button onClick={logRecentTrack}
+                style={{ width:"100%", background:C.surface, border:`1px solid ${C.border}`, borderRadius:10, padding:"11px", color:C.textMid, fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:fontSans }}>
+                Log a session for this →
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Tabs */}
@@ -427,11 +493,15 @@ export default function FlowOS() {
                       }
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontFamily:font, fontWeight:600, fontSize:14, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{s.track.title}</div>
-                        <div style={{ color:C.textSoft, fontSize:11, marginTop:2 }}>{s.date} · {s.duration}</div>
+                        <div style={{ color:C.textSoft, fontSize:11, marginTop:2 }}>{s.timestamp ? formatSessionDate(s.timestamp) : s.date} · {s.duration}{s.track.genre ? ` · ${s.track.genre}` : ""}</div>
                       </div>
                       <div style={{ padding:"4px 10px", borderRadius:7, background:cfg?.bg, color:cfg?.color, fontSize:11, fontWeight:600, whiteSpace:"nowrap", flexShrink:0 }}>
                         {cfg?.icon} {s.ratingLabel}
                       </div>
+                      <button onClick={() => deleteSession(s.id)} title="Delete session"
+                        style={{ background:"none", border:"none", color:C.textSoft, fontSize:16, cursor:"pointer", padding:"2px 4px", flexShrink:0, lineHeight:1 }}>
+                        ×
+                      </button>
                     </div>
                   );
                 })}
