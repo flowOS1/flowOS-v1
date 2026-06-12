@@ -50,6 +50,21 @@ async function spotifyFetch(endpoint) {
   return res.json();
 }
 
+// Simple in-memory cache so we don't refetch genre for the same artist repeatedly
+const genreCache = {};
+async function getGenreForArtist(artistId) {
+  if (!artistId) return "";
+  if (genreCache[artistId]) return genreCache[artistId];
+  const data = await spotifyFetch(`/artists/${artistId}`);
+  const genre = data?.genres?.[0] || "";
+  genreCache[artistId] = genre;
+  return genre;
+}
+function formatGenre(genre) {
+  if (!genre) return "";
+  return genre.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
 const C = {
   bg:"#f7f3ee", surface:"#ede8e1", border:"#ddd6cc", borderSoft:"#e8e2da",
   text:"#2c2520", textMid:"#7a6e65", textSoft:"#a89f96",
@@ -99,6 +114,7 @@ export default function FlowOS() {
   const [justSaved, setJustSaved]   = useState(false);
   const [userProfile, setProfile]   = useState(null);
   const [onboarded, setOnboarded]   = useState(false);
+  const [copied, setCopied]         = useState(false);
   const timerRef = useRef(null);
   const pollRef  = useRef(null);
 
@@ -140,7 +156,15 @@ export default function FlowOS() {
     const fetch = async () => {
       const data = await spotifyFetch("/me/player/currently-playing");
       if (data && data.item) {
-        setTrack({ title:data.item.name, artist:data.item.artists.map(a=>a.name).join(", "), cover:data.item.album.images[1]?.url||data.item.album.images[0]?.url, genre:data.item.album.name, uri:data.item.uri });
+        const artistId = data.item.artists?.[0]?.id;
+        const cover = data.item.album.images[1]?.url || data.item.album.images[0]?.url;
+        const title = data.item.name;
+        const artist = data.item.artists.map(a => a.name).join(", ");
+        const uri = data.item.uri;
+        // Set track immediately with placeholder genre, then update once fetched
+        setTrack(prev => ({ title, artist, cover, genre: prev.uri === uri ? prev.genre : "", uri }));
+        const genre = await getGenreForArtist(artistId);
+        setTrack(prev => prev.uri === uri ? { ...prev, genre: formatGenre(genre) } : prev);
       } else { setTrack(EMPTY_TRACK); }
     };
     fetch();
@@ -217,15 +241,22 @@ export default function FlowOS() {
         <h1 style={{ fontFamily:font, fontSize:30, fontWeight:700, lineHeight:1.2, margin:"0 0 8px", color:C.text }}>
           Hey {userProfile?.display_name?.split(" ")[0]} 👋
         </h1>
-        <p style={{ color:C.textMid, fontSize:15, lineHeight:1.7, margin:"0 0 32px" }}>
-          flowOS learns which music puts you in your best cognitive state. The more sessions you log, the smarter it gets.
+        <p style={{ color:C.textMid, fontSize:15, lineHeight:1.7, margin:"0 0 28px" }}>
+          In a couple weeks, flowOS will be able to tell you things like <em style={{ fontStyle:"italic", color:C.text }}>"you hit deep flow 3× more often with instrumental music after 9am"</em> — based entirely on your own listening.
         </p>
 
-        <div style={{ fontSize:10, letterSpacing:3, color:C.textSoft, textTransform:"uppercase", fontWeight:600, marginBottom:12 }}>
-          What the research says
+        <div style={{ background:C.accentBg, border:`1px solid ${C.accent}30`, borderRadius:14, padding:"16px 18px", marginBottom:28 }}>
+          <div style={{ fontFamily:font, fontWeight:600, fontSize:14, color:C.accent, marginBottom:4 }}>How it works</div>
+          <div style={{ color:C.textMid, fontSize:13, lineHeight:1.7 }}>
+            Play music → hit Start session → work → hit End + check-in → rate how it felt. 10 seconds per session. flowOS does the rest.
+          </div>
         </div>
 
-        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:36 }}>
+        <div style={{ fontSize:10, letterSpacing:3, color:C.textSoft, textTransform:"uppercase", fontWeight:600, marginBottom:12 }}>
+          While your data builds, here's what the research already says
+        </div>
+
+        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:28 }}>
           {STARTER_INSIGHTS.map((ins, i) => (
             <div key={i} style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:14, padding:"16px 18px", display:"flex", gap:14, alignItems:"flex-start", boxShadow:"0 1px 3px rgba(0,0,0,0.04)" }}>
               <div style={{ fontSize:22, flexShrink:0, marginTop:1 }}>{ins.icon}</div>
@@ -237,17 +268,17 @@ export default function FlowOS() {
           ))}
         </div>
 
-        <div style={{ background:C.accentBg, border:`1px solid ${C.accent}30`, borderRadius:14, padding:"16px 18px", marginBottom:28 }}>
-          <div style={{ fontFamily:font, fontWeight:600, fontSize:14, color:C.accent, marginBottom:4 }}>How it works</div>
-          <div style={{ color:C.textMid, fontSize:13, lineHeight:1.7 }}>
-            Play music → hit Start session → work → hit End + check-in → rate how it felt. That's it. flowOS does the rest.
-          </div>
-        </div>
-
         <button onClick={completeOnboarding}
-          style={{ width:"100%", background:C.accent, border:"none", borderRadius:13, padding:"16px", color:"#fff", fontWeight:600, fontSize:15, cursor:"pointer", fontFamily:fontSans, letterSpacing:0.2 }}>
+          style={{ width:"100%", background:C.accent, border:"none", borderRadius:13, padding:"16px", color:"#fff", fontWeight:600, fontSize:15, cursor:"pointer", fontFamily:fontSans, letterSpacing:0.2, marginBottom:16 }}>
           Start tracking →
         </button>
+
+        <div style={{ textAlign:"center" }}>
+          <a href="https://forms.gle/REPLACE_WITH_YOUR_FORM_LINK" target="_blank" rel="noopener noreferrer"
+            style={{ fontSize:12, color:C.textSoft, textDecoration:"underline" }}>
+            Something broken or confusing? Tell us →
+          </a>
+        </div>
       </div>
     </div>
   );
@@ -357,7 +388,7 @@ export default function FlowOS() {
 
         {/* Tabs */}
         <div style={{ display:"flex", margin:"22px 24px 0", background:C.surface, borderRadius:13, padding:4, border:`1px solid ${C.borderSoft}` }}>
-          {["sessions","insights"].map(tab => (
+          {["sessions","insights","recap"].map(tab => (
             <button key={tab} onClick={() => setTab(tab)}
               style={{ flex:1, background:activeTab===tab?"#fff":"none", border:`1px solid ${activeTab===tab?C.border:"transparent"}`, borderRadius:10, padding:"10px", color:activeTab===tab?C.text:C.textMid, fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:fontSans, transition:"all 0.15s", textTransform:"capitalize", boxShadow:activeTab===tab?"0 1px 4px rgba(0,0,0,0.07)":"none" }}>
               {tab}
@@ -485,6 +516,102 @@ export default function FlowOS() {
             )}
           </div>
         )}
+
+        {/* Weekly Recap */}
+        {activeTab === "recap" && (
+          <div style={{ padding:"20px 24px 0" }}>
+            <div style={{ color:C.textSoft, fontSize:10, letterSpacing:3, textTransform:"uppercase", fontWeight:600, marginBottom:14 }}>Weekly recap</div>
+
+            {sessions.length === 0 ? (
+              <div style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:16, padding:"28px 20px", textAlign:"center", boxShadow:"0 1px 3px rgba(0,0,0,0.04)" }}>
+                <div style={{ fontSize:28, marginBottom:10 }}>📊</div>
+                <div style={{ fontFamily:font, fontSize:16, fontWeight:600, color:C.text, marginBottom:6 }}>Nothing to recap yet</div>
+                <div style={{ color:C.textMid, fontSize:13, lineHeight:1.6 }}>Log a few sessions and your weekly recap will appear here — ready to share.</div>
+              </div>
+            ) : (() => {
+              const total = sessions.length;
+              const flowCount = sessions.filter(s => s.rating === "deep-flow").length;
+              const focusedCount = sessions.filter(s => s.rating === "focused").length;
+              const totalMinutes = sessions.reduce((acc, s) => {
+                const [m, sec] = s.duration.split(":").map(Number);
+                return acc + (m || 0) + (sec >= 30 ? 1 : 0);
+              }, 0);
+              const trackCounts = {};
+              sessions.forEach(s => { trackCounts[s.track.title] = (trackCounts[s.track.title] || 0) + 1; });
+              const topTrack = Object.entries(trackCounts).sort((a,b) => b[1]-a[1])[0];
+
+              const recapText =
+`🎧 My flowOS week
+
+${total} session${total===1?"":"s"} logged
+${totalMinutes} min of tracked focus time
+${flowCount} deep flow + ${focusedCount} focused sessions
+Top track: ${topTrack ? topTrack[0] : "—"}
+
+Tracking how music shapes my focus with flowOS → flow-os-v1.vercel.app`;
+
+              const handleShare = async () => {
+                try {
+                  await navigator.clipboard.writeText(recapText);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                } catch {}
+              };
+
+              return (
+                <>
+                  <div style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:18, padding:"24px 22px", boxShadow:"0 2px 12px rgba(0,0,0,0.06)", marginBottom:14 }}>
+                    <div style={{ fontSize:11, letterSpacing:3, color:C.accent, textTransform:"uppercase", fontWeight:600, marginBottom:6 }}>🎧 My flowOS week</div>
+                    <div style={{ fontFamily:font, fontSize:24, fontWeight:700, color:C.text, marginBottom:18 }}>
+                      {total} session{total===1?"":"s"} · {totalMinutes} min
+                    </div>
+
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:18 }}>
+                      <div style={{ background:C.sageBg, borderRadius:12, padding:"12px 14px" }}>
+                        <div style={{ fontFamily:font, fontSize:20, fontWeight:700, color:C.sage }}>{flowCount}</div>
+                        <div style={{ fontSize:11, color:C.textMid, marginTop:2 }}>Deep flow</div>
+                      </div>
+                      <div style={{ background:C.blueBg, borderRadius:12, padding:"12px 14px" }}>
+                        <div style={{ fontFamily:font, fontSize:20, fontWeight:700, color:C.blue }}>{focusedCount}</div>
+                        <div style={{ fontSize:11, color:C.textMid, marginTop:2 }}>Focused</div>
+                      </div>
+                    </div>
+
+                    {topTrack && (
+                      <div style={{ borderTop:`1px solid ${C.borderSoft}`, paddingTop:14 }}>
+                        <div style={{ fontSize:10, letterSpacing:2, color:C.textSoft, textTransform:"uppercase", fontWeight:600, marginBottom:6 }}>Top track</div>
+                        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                          {sessions.find(s => s.track.title === topTrack[0])?.track.cover
+                            ? <img src={sessions.find(s => s.track.title === topTrack[0]).track.cover} style={{ width:36, height:36, borderRadius:8, objectFit:"cover" }} alt="" />
+                            : <div style={{ fontSize:20 }}>🎵</div>
+                          }
+                          <div style={{ fontFamily:font, fontWeight:600, fontSize:14, color:C.text }}>{topTrack[0]}</div>
+                          <div style={{ marginLeft:"auto", fontSize:12, color:C.textSoft }}>×{topTrack[1]}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <button onClick={handleShare}
+                    style={{ width:"100%", background:copied?C.sageBg:C.accent, border:copied?`1px solid ${C.sage}40`:"none", borderRadius:13, padding:"15px", color:copied?C.sage:"#fff", fontWeight:600, fontSize:14, cursor:"pointer", fontFamily:fontSans, transition:"all 0.2s" }}>
+                    {copied ? "✓ Copied to clipboard" : "Copy recap to share →"}
+                  </button>
+                  <div style={{ textAlign:"center", color:C.textSoft, fontSize:12, marginTop:10, lineHeight:1.6 }}>
+                    Paste it anywhere — Notes, a group chat, Reddit, X.
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Feedback link */}
+        <div style={{ textAlign:"center", marginTop:28 }}>
+          <a href="https://forms.gle/REPLACE_WITH_YOUR_FORM_LINK" target="_blank" rel="noopener noreferrer"
+            style={{ fontSize:12, color:C.textSoft, textDecoration:"underline" }}>
+            Something broken or confusing? Tell us →
+          </a>
+        </div>
       </div>
     </div>
   );
