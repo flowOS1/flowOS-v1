@@ -113,6 +113,13 @@ function loadSessions() {
 function saveSessions(sessions) {
   try { localStorage.setItem("flowos_sessions", JSON.stringify(sessions)); } catch {}
 }
+// Clears only Spotify auth tokens, never touches saved sessions or onboarding state
+function clearAuth() {
+  localStorage.removeItem("spotify_token");
+  localStorage.removeItem("spotify_refresh");
+  localStorage.removeItem("spotify_expiry");
+  localStorage.removeItem("pkce_verifier");
+}
 
 export default function FlowOS() {
   const [screen, setScreen]         = useState("loading");
@@ -160,7 +167,7 @@ export default function FlowOS() {
       if (!hasOnboarded) { setScreen("onboarding"); }
       else { setScreen("home"); pollTrack(); }
     } else {
-      localStorage.clear(); setScreen("connect");
+      clearAuth(); setScreen("connect");
     }
   }
 
@@ -315,7 +322,7 @@ export default function FlowOS() {
     setCheckin(true);
   };
 
-  const logout = () => { localStorage.clear(); setScreen("connect"); clearInterval(pollRef.current); };
+  const logout = () => { clearAuth(); setScreen("connect"); clearInterval(pollRef.current); };
 
   const GF = { minHeight:"100vh", background:C.bg, display:"flex", alignItems:"center", justifyContent:"center", padding:24, fontFamily:fontSans };
   const FONTS = <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />;
