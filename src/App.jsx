@@ -129,6 +129,11 @@ export default function FlowOS() {
   const [copied, setCopied]         = useState(false);
   const [recentTrack, setRecent]    = useState(null);
   const [showSettings, setSettings] = useState(false);
+  const [pomodoroOn, setPomodoroOn] = useState(false);
+  const [pomoPhase, setPomoPhase]   = useState("work"); // "work" | "break"
+  const [pomoRemaining, setPomoRemaining] = useState(25 * 60);
+  const sessionStartRef = useRef(null);
+  const pomoTimerRef = useRef(null);
   const timerRef = useRef(null);
   const pollRef  = useRef(null);
 
@@ -206,13 +211,89 @@ export default function FlowOS() {
   useEffect(() => () => { clearInterval(pollRef.current); }, []);
 
   useEffect(() => {
-    if (sessionActive) timerRef.current = setInterval(() => setElapsed(e => e+1), 1000);
-    else clearInterval(timerRef.current);
+    if (sessionActive) {
+      sessionStartRef.current = Date.now() - elapsed * 1000;
+      timerRef.current = setInterval(() => {
+        setElapsed(Math.round((Date.now() - sessionStartRef.current) / 1000));
+      }, 1000);
+    } else {
+      clearInterval(timerRef.current);
+      sessionStartRef.current = null;
+    }
     return () => clearInterval(timerRef.current);
   }, [sessionActive]);
 
+  // Correct elapsed time immediately when tab/screen becomes visible again
+  // (covers cases where the interval was suspended by the OS/browser)
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && sessionActive && sessionStartRef.current) {
+        setElapsed(Math.round((Date.now() - sessionStartRef.current) / 1000));
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [sessionActive]);
+
   const fmt = s => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
-  const endSession = () => { setSession(false); setCheckin(true); };
+
+  // Synthesized chime — replace with an audio file later by swapping this function
+  const playChime = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const start = ctx.currentTime + i * 0.15;
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(0.25, start + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.8);
+        osc.start(start);
+        osc.stop(start + 0.8);
+      });
+    } catch {}
+  };
+
+  // Pomodoro countdown
+  useEffect(() => {
+    if (pomodoroOn) {
+      pomoTimerRef.current = setInterval(() => {
+        setPomoRemaining(r => {
+          if (r <= 1) {
+            playChime();
+            const nextPhase = pomoPhase === "work" ? "break" : "work";
+            setPomoPhase(nextPhase);
+            return nextPhase === "work" ? 25 * 60 : 5 * 60;
+          }
+          return r - 1;
+        });
+      }, 1000);
+    } else {
+      clearInterval(pomoTimerRef.current);
+    }
+    return () => clearInterval(pomoTimerRef.current);
+  }, [pomodoroOn, pomoPhase]);
+
+  const togglePomodoro = () => {
+    if (!pomodoroOn) { setPomoPhase("work"); setPomoRemaining(25 * 60); }
+    setPomodoroOn(!pomodoroOn);
+  };
+  const endSession = () => {
+    if (sessionStartRef.current) {
+      setElapsed(Math.round((Date.now() - sessionStartRef.current) / 1000));
+    }
+    setSession(false);
+    setCheckin(true);
+  };
 
   const submitRating = () => {
     const newSession = { id:Date.now(), timestamp:Date.now(), track:currentTrack, duration:fmt(elapsed), rating:checkinRating, ratingLabel:RATING_CONFIG[checkinRating]?.label };
@@ -454,7 +535,7 @@ export default function FlowOS() {
 
         {/* Tabs */}
         <div style={{ display:"flex", margin:"22px 24px 0", background:C.surface, borderRadius:13, padding:4, border:`1px solid ${C.borderSoft}` }}>
-          {["sessions","insights","recap"].map(tab => (
+          {["sessions","insights","recap","pomodoro"].map(tab => (
             <button key={tab} onClick={() => setTab(tab)}
               style={{ flex:1, background:activeTab===tab?"#fff":"none", border:`1px solid ${activeTab===tab?C.border:"transparent"}`, borderRadius:10, padding:"10px", color:activeTab===tab?C.text:C.textMid, fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:fontSans, transition:"all 0.15s", textTransform:"capitalize", boxShadow:activeTab===tab?"0 1px 4px rgba(0,0,0,0.07)":"none" }}>
               {tab}
@@ -674,6 +755,61 @@ Tracking how music shapes my focus with flowOS → flow-os-v1.vercel.app`;
             })()}
           </div>
         )}
+
+        {/* Pomodoro */}
+        {activeTab === "pomodoro" && (() => {
+          const totalDuration = pomoPhase === "work" ? 25 * 60 : 5 * 60;
+          const progress = 1 - pomoRemaining / totalDuration;
+          const radius = 90;
+          const circumference = 2 * Math.PI * radius;
+          const dashoffset = circumference * (1 - progress);
+          const phaseColor = pomoPhase === "work" ? C.accent : C.sage;
+          const phaseBg = pomoPhase === "work" ? C.accentBg : C.sageBg;
+
+          return (
+            <div style={{ padding:"20px 24px 0" }}>
+              <div style={{ color:C.textSoft, fontSize:10, letterSpacing:3, textTransform:"uppercase", fontWeight:600, marginBottom:14 }}>Pomodoro</div>
+
+              <div style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:20, padding:"32px 20px", boxShadow:"0 2px 12px rgba(0,0,0,0.06)", textAlign:"center" }}>
+                <div style={{ display:"inline-block", marginBottom:6, padding:"5px 14px", borderRadius:20, background:phaseBg, color:phaseColor, fontSize:12, fontWeight:600, letterSpacing:1, textTransform:"uppercase" }}>
+                  {pomoPhase === "work" ? "Focus" : "Break"}
+                </div>
+
+                <div style={{ position:"relative", width:220, height:220, margin:"24px auto" }}>
+                  <svg width="220" height="220" viewBox="0 0 220 220" style={{ transform:"rotate(-90deg)" }}>
+                    <circle cx="110" cy="110" r={radius} fill="none" stroke={C.surface} strokeWidth="10" />
+                    <circle cx="110" cy="110" r={radius} fill="none" stroke={phaseColor} strokeWidth="10"
+                      strokeDasharray={circumference} strokeDashoffset={dashoffset} strokeLinecap="round"
+                      style={{ transition:"stroke-dashoffset 1s linear" }} />
+                  </svg>
+                  <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    <div style={{ fontFamily:font, fontSize:48, fontWeight:700, color:C.text, fontVariantNumeric:"tabular-nums" }}>
+                      {fmt(pomoRemaining)}
+                    </div>
+                  </div>
+                </div>
+
+                <button onClick={togglePomodoro}
+                  style={{ width:"100%", background:pomodoroOn?C.surface:C.accent, border:pomodoroOn?`1px solid ${C.border}`:"none", borderRadius:13, padding:"15px", color:pomodoroOn?C.textMid:"#fff", fontWeight:600, fontSize:14, cursor:"pointer", fontFamily:fontSans, transition:"all 0.2s" }}>
+                  {pomodoroOn ? "Pause" : "Start Pomodoro"}
+                </button>
+
+                {pomodoroOn && (
+                  <button onClick={() => { setPomoPhase("work"); setPomoRemaining(25*60); setPomodoroOn(false); }}
+                    style={{ width:"100%", background:"none", border:"none", borderRadius:13, padding:"10px", color:C.textSoft, fontWeight:500, fontSize:12, cursor:"pointer", fontFamily:fontSans, marginTop:4, textDecoration:"underline" }}>
+                    Reset
+                  </button>
+                )}
+              </div>
+
+              <div style={{ background:C.accentBg, border:`1px solid ${C.accent}30`, borderRadius:14, padding:"14px 18px", marginTop:14 }}>
+                <div style={{ color:C.textMid, fontSize:12, lineHeight:1.7 }}>
+                  25 minutes of focus, then a 5 minute break — repeating automatically. A chime plays when each phase ends. Keep this tab open for the timer and sound to keep running.
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Feedback link */}
         <div style={{ textAlign:"center", marginTop:28 }}>
