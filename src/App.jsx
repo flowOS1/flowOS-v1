@@ -384,6 +384,13 @@ export default function FlowOS() {
     setAddingSubject(false);
   };
 
+  const removeSubject = (subj) => {
+    const updated = subjects.filter(s => s !== subj);
+    setSubjects(updated);
+    saveSubjects(updated);
+    if (selectedSubject === subj) setSelectedSubject(null);
+  };
+
   const deleteSession = (id) => {
     const updated = sessions.filter(s => s.id !== id);
     setSessions(updated);
@@ -521,10 +528,16 @@ export default function FlowOS() {
                   const sc = colorForSubject(subj);
                   const active = selectedSubject === subj;
                   return (
-                    <button key={subj} onClick={() => setSelectedSubject(active ? null : subj)}
-                      style={{ borderRadius:20, padding:"7px 14px", fontSize:13, fontWeight:500, cursor:"pointer", fontFamily:fontSans, border:active?"1px solid transparent":`1px solid ${C.border}`, background:active?sc.bg:"#fff", color:active?sc.fg:C.textMid, transition:"all 0.15s" }}>
-                      {subj}
-                    </button>
+                    <div key={subj} style={{ display:"inline-flex", alignItems:"center", borderRadius:20, border:active?"1px solid transparent":`1px solid ${C.border}`, background:active?sc.bg:"#fff", overflow:"hidden" }}>
+                      <button onClick={() => setSelectedSubject(active ? null : subj)}
+                        style={{ padding:"7px 6px 7px 14px", fontSize:13, fontWeight:500, cursor:"pointer", fontFamily:fontSans, border:"none", background:"transparent", color:active?sc.fg:C.textMid }}>
+                        {subj}
+                      </button>
+                      <button onClick={() => removeSubject(subj)} title="Remove subject"
+                        style={{ padding:"7px 10px 7px 4px", fontSize:13, cursor:"pointer", fontFamily:fontSans, border:"none", background:"transparent", color:active?sc.fg:C.textSoft, opacity:0.6, lineHeight:1 }}>
+                        ×
+                      </button>
+                    </div>
                   );
                 })}
                 {!addingSubject ? (
