@@ -60,6 +60,17 @@ async function getGenreForArtist(artistId) {
   genreCache[artistId] = genre;
   return genre;
 }
+// Cache audio features per track so repeat plays don't refetch
+const featuresCache = {};
+async function getAudioFeatures(trackId) {
+  if (!trackId) return null;
+  if (featuresCache[trackId]) return featuresCache[trackId];
+  const data = await spotifyFetch(`/audio-features/${trackId}`);
+  if (!data) return null;
+  const features = { tempo: data.tempo, energy: data.energy, valence: data.valence };
+  featuresCache[trackId] = features;
+  return features;
+}
 function formatGenre(genre) {
   if (!genre) return "";
   return genre.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
@@ -105,6 +116,32 @@ const SUBJECT_COLORS = [
   { color:"rose",  fg:C.rose,  bg:C.roseBg },
 ];
 const DEFAULT_SUBJECTS = ["Maths Methods", "English 3", "Business Studies"];
+
+// Optional context tags shown occasionally after check-in (every 3rd session)
+const CONTEXT_TAGS = [
+  { id:"tired", label:"😴 Felt tired" },
+  { id:"noisy", label:"🔊 Noisy environment" },
+  { id:"hungry", label:"🍽️ Hungry / needed a break" },
+  { id:"phone", label:"📱 Phone distractions" },
+  { id:"good_sleep", label:"🌙 Slept well" },
+  { id:"none", label:"Nothing notable" },
+];
+
+// Average tempo/energy/valence across all tracks played in a session
+function averageFeatures(tracks) {
+  const withFeatures = tracks.filter(t => t.features);
+  if (!withFeatures.length) return null;
+  const sum = withFeatures.reduce((acc, t) => ({
+    tempo: acc.tempo + t.features.tempo,
+    energy: acc.energy + t.features.energy,
+    valence: acc.valence + t.features.valence,
+  }), { tempo:0, energy:0, valence:0 });
+  return {
+    tempo: Math.round(sum.tempo / withFeatures.length),
+    energy: Math.round((sum.energy / withFeatures.length) * 100) / 100,
+    valence: Math.round((sum.valence / withFeatures.length) * 100) / 100,
+  };
+}
 
 // Curated starter insights shown before user has personal data
 const STARTER_INSIGHTS = [
@@ -152,6 +189,8 @@ export default function FlowOS() {
   const [screen, setScreen]         = useState("loading");
   const [activeTab, setTab]         = useState("sessions");
   const [sessionActive, setSession] = useState(false);
+  const sessionActiveRef = useRef(false);
+  useEffect(() => { sessionActiveRef.current = sessionActive; }, [sessionActive]);
   const [currentTrack, setTrack]    = useState(EMPTY_TRACK);
   const [elapsed, setElapsed]       = useState(0);
   const [showCheckin, setCheckin]   = useState(false);
@@ -171,10 +210,13 @@ export default function FlowOS() {
   const [pomoDuration, setPomoDuration] = useState(25 * 60); // selected length in seconds
   const [pomoRemaining, setPomoRemaining] = useState(25 * 60);
   const sessionStartRef = useRef(null);
+  const sessionTracksRef = useRef([]); // accumulates every unique track played during the active session
   const pomoTimerRef = useRef(null);
   const pomoEndRef = useRef(null); // wall-clock timestamp for when the timer should hit 0
   const timerRef = useRef(null);
   const pollRef  = useRef(null);
+  const [contextTag, setContextTag] = useState(null); // optional "what affected this session" tag
+  const [showContextPrompt, setShowContextPrompt] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -216,15 +258,25 @@ export default function FlowOS() {
       const data = await spotifyFetch("/me/player/currently-playing");
       if (data && data.item) {
         const artistId = data.item.artists?.[0]?.id;
+        const trackId = data.item.id;
         const cover = data.item.album.images[1]?.url || data.item.album.images[0]?.url;
         const title = data.item.name;
         const artist = data.item.artists.map(a => a.name).join(", ");
         const uri = data.item.uri;
         setRecent(null);
         // Set track immediately with placeholder genre, then update once fetched
-        setTrack(prev => ({ title, artist, cover, genre: prev.uri === uri ? prev.genre : "", uri }));
+        setTrack(prev => ({ title, artist, cover, genre: prev.uri === uri ? prev.genre : "", uri, trackId }));
         const genre = await getGenreForArtist(artistId);
-        setTrack(prev => prev.uri === uri ? { ...prev, genre: formatGenre(genre) } : prev);
+        const features = await getAudioFeatures(trackId);
+        setTrack(prev => prev.uri === uri ? { ...prev, genre: formatGenre(genre), features } : prev);
+
+        // If a session is active, record this track (once) for the session's track list
+        if (sessionActiveRef.current && trackId) {
+          const exists = sessionTracksRef.current.some(t => t.trackId === trackId);
+          if (!exists) {
+            sessionTracksRef.current = [...sessionTracksRef.current, { title, artist, cover, genre: formatGenre(genre), trackId, features }];
+          }
+        }
       } else {
         setTrack(EMPTY_TRACK);
         // Fetch most recently played track as a fallback
@@ -239,6 +291,7 @@ export default function FlowOS() {
             cover: item.album.images[1]?.url || item.album.images[0]?.url,
             genre: formatGenre(genre),
             uri: item.uri,
+            trackId: item.id,
             playedAt: recent.items[0].played_at,
           });
         }
@@ -363,12 +416,42 @@ export default function FlowOS() {
   };
 
   const submitRating = () => {
-    const newSession = { id:Date.now(), timestamp:Date.now(), track:currentTrack, duration:fmt(elapsed), rating:checkinRating, ratingLabel:RATING_CONFIG[checkinRating]?.label, subject:selectedSubject };
+    const tracks = sessionTracksRef.current.length ? sessionTracksRef.current : [currentTrack];
+    const features = averageFeatures(tracks);
+    const newSession = {
+      id:Date.now(), timestamp:Date.now(), track:currentTrack, tracks, features,
+      duration:fmt(elapsed), rating:checkinRating, ratingLabel:RATING_CONFIG[checkinRating]?.label,
+      subject:selectedSubject, context:null,
+    };
     const updated = [newSession, ...sessions];
     setSessions(updated);
     saveSessions(updated);
+    sessionTracksRef.current = [];
     setJustSaved(true);
-    setTimeout(() => { setCheckin(false); setRating(null); setElapsed(0); setJustSaved(false); setSelectedSubject(null); setAddingSubject(false); setNewSubjectName(""); setTab("sessions"); }, 1300);
+
+    // Every 3rd session, show an optional "what affected this session" prompt
+    const sessionCount = updated.length;
+    const shouldAskContext = sessionCount % 3 === 0;
+
+    setTimeout(() => {
+      setJustSaved(false);
+      setSelectedSubject(null); setAddingSubject(false); setNewSubjectName("");
+      if (shouldAskContext) {
+        setShowContextPrompt(true);
+      } else {
+        setCheckin(false); setRating(null); setElapsed(0); setTab("sessions");
+      }
+    }, 1300);
+  };
+
+  const submitContext = (tagId) => {
+    setSessions(prev => {
+      const updated = prev.map((s, i) => i === 0 ? { ...s, context: tagId === "none" ? null : tagId } : s);
+      saveSessions(updated);
+      return updated;
+    });
+    setShowContextPrompt(false);
+    setCheckin(false); setRating(null); setElapsed(0); setTab("sessions");
   };
 
   const addSubject = () => {
@@ -498,7 +581,25 @@ export default function FlowOS() {
   if (showCheckin) return (
     <div style={GF}>{FONTS}
       <div style={{ width:"100%", maxWidth:360 }}>
-        {justSaved ? (
+        {showContextPrompt ? (
+          <>
+            <div style={{ fontSize:10, letterSpacing:4, color:C.accent, textTransform:"uppercase", fontWeight:600, marginBottom:20 }}>One more thing</div>
+            <h2 style={{ fontFamily:font, fontSize:24, fontWeight:700, margin:"0 0 8px", color:C.text, lineHeight:1.3 }}>Anything affect this session?</h2>
+            <div style={{ color:C.textMid, fontSize:13, lineHeight:1.6, marginBottom:24 }}>
+              Totally optional — helps spot patterns beyond just music.
+            </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {CONTEXT_TAGS.map(tag => (
+                <button key={tag.id} onClick={() => submitContext(tag.id)}
+                  style={{ background:"#fff", border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 18px", textAlign:"left", cursor:"pointer", color:C.text, fontFamily:fontSans, fontSize:14, fontWeight:500, transition:"all 0.15s" }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = C.border}>
+                  {tag.label}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : justSaved ? (
           <div style={{ textAlign:"center" }}>
             <div style={{ width:56, height:56, borderRadius:"50%", background:C.sageBg, border:`1px solid ${C.sage}40`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 20px", fontSize:22, color:C.sage }}>✓</div>
             <div style={{ fontFamily:font, fontSize:24, fontWeight:700, color:C.text }}>Session saved.</div>
@@ -626,7 +727,13 @@ export default function FlowOS() {
           </div>
           <div style={{ display:"flex", gap:8 }}>
             {!sessionActive ? (
-              <button onClick={() => setSession(true)}
+              <button onClick={() => {
+                  // Seed the session's track list with whatever's currently playing
+                  sessionTracksRef.current = currentTrack.trackId
+                    ? [{ title:currentTrack.title, artist:currentTrack.artist, cover:currentTrack.cover, genre:currentTrack.genre, trackId:currentTrack.trackId, features:currentTrack.features }]
+                    : [];
+                  setSession(true);
+                }}
                 style={{ flex:1, background:C.accent, border:"none", borderRadius:11, padding:"13px", color:"#fff", fontWeight:600, fontSize:14, cursor:"pointer", fontFamily:fontSans }}>
                 Start session
               </button>
@@ -827,6 +934,75 @@ export default function FlowOS() {
                           </div>
                         );
                       })}
+                    </div>
+                  );
+                })()}
+
+                {/* Sound profile by flow state — uses real Spotify audio features */}
+                {sessions.some(s => s.features) && (() => {
+                  const withFeatures = sessions.filter(s => s.features);
+                  const flowSessions = withFeatures.filter(s => s.rating === "deep-flow" || s.rating === "focused");
+                  const offSessions = withFeatures.filter(s => s.rating === "distracted" || s.rating === "okay");
+                  const avg = (arr, key) => arr.length ? Math.round((arr.reduce((a,s) => a + s.features[key], 0) / arr.length) * (key === "tempo" ? 1 : 100)) : null;
+
+                  if (flowSessions.length < 2 || offSessions.length < 2) return null;
+
+                  const rows = [
+                    { label:"Tempo", flow:avg(flowSessions,"tempo"), off:avg(offSessions,"tempo"), unit:" BPM" },
+                    { label:"Energy", flow:avg(flowSessions,"energy"), off:avg(offSessions,"energy"), unit:"%" },
+                    { label:"Mood (valence)", flow:avg(flowSessions,"valence"), off:avg(offSessions,"valence"), unit:"%" },
+                  ];
+
+                  return (
+                    <div style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:16, padding:"18px 20px", marginTop:8, boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
+                      <div style={{ fontSize:13, color:C.textMid, fontWeight:500, marginBottom:4 }}>Your sound profile</div>
+                      <div style={{ fontSize:11, color:C.textSoft, marginBottom:16 }}>Average track characteristics — focused vs unfocused sessions</div>
+                      {rows.map(r => (
+                        <div key={r.label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10, paddingBottom:10, borderBottom:`1px solid ${C.borderSoft}` }}>
+                          <div style={{ fontSize:12, color:C.textMid }}>{r.label}</div>
+                          <div style={{ display:"flex", gap:14 }}>
+                            <div style={{ textAlign:"right" }}>
+                              <div style={{ fontSize:13, fontWeight:700, color:C.sage }}>{r.flow}{r.unit}</div>
+                              <div style={{ fontSize:9, color:C.textSoft, textTransform:"uppercase", letterSpacing:1 }}>Flow</div>
+                            </div>
+                            <div style={{ textAlign:"right" }}>
+                              <div style={{ fontSize:13, fontWeight:700, color:C.rose }}>{r.off}{r.unit}</div>
+                              <div style={{ fontSize:9, color:C.textSoft, textTransform:"uppercase", letterSpacing:1 }}>Off</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* Context tag breakdown — from the occasional "what affected this session" prompt */}
+                {sessions.some(s => s.context) && (() => {
+                  const byContext = {};
+                  sessions.forEach(s => {
+                    if (!s.context) return;
+                    if (!byContext[s.context]) byContext[s.context] = { total:0, flow:0 };
+                    byContext[s.context].total += 1;
+                    if (s.rating === "deep-flow" || s.rating === "focused") byContext[s.context].flow += 1;
+                  });
+                  const rows = Object.entries(byContext)
+                    .map(([id, d]) => ({ tag: CONTEXT_TAGS.find(t => t.id === id)?.label || id, pct: Math.round((d.flow/d.total)*100), total: d.total }))
+                    .sort((a,b) => b.pct - a.pct);
+
+                  return (
+                    <div style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:16, padding:"18px 20px", marginTop:8, boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
+                      <div style={{ fontSize:13, color:C.textMid, fontWeight:500, marginBottom:16 }}>Flow rate by context</div>
+                      {rows.map(({ tag, pct, total }) => (
+                        <div key={tag} style={{ marginBottom:10 }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+                            <div style={{ fontSize:12, color:C.textMid }}>{tag} <span style={{ color:C.textSoft }}>({total})</span></div>
+                            <div style={{ fontSize:12, color:C.accent, fontWeight:600 }}>{pct}%</div>
+                          </div>
+                          <div style={{ height:5, background:C.surface, borderRadius:3, overflow:"hidden" }}>
+                            <div style={{ height:"100%", width:`${pct}%`, background:C.accent, borderRadius:3, opacity:0.75 }} />
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   );
                 })()}
