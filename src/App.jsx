@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 const CLIENT_ID = "fc1007724c2d4c7e8e174e501c180542";
 const REDIRECT_URI = "https://flow-os-v1.vercel.app";
@@ -1002,6 +1003,7 @@ Tracking how music shapes my focus with flowOS → flow-os-v1.vercel.app`;
           </a>
         </div>
       </div>
+      <SpeedInsights />
     </div>
   );
 }
