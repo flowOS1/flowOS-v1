@@ -85,6 +85,7 @@ const C = {
   blue:"#5d7fa3", blueBg:"#dce7f2",
   amber:"#b58a3a", amberBg:"#f0e6d0",
   rose:"#c05c5c", roseBg:"#f2dcdc",
+  plum:"#8a7299", plumBg:"#e8e1ed",
 };
 
 const RATING_CONFIG = {
@@ -93,6 +94,17 @@ const RATING_CONFIG = {
   "focused":    { label:"Focused",    color:C.blue,  bg:C.blueBg,  icon:"◕" },
   "deep-flow":  { label:"Deep flow",  color:C.sage,  bg:C.sageBg,  icon:"●" },
 };
+
+// Default subject options — user can add a custom one via "Other"
+const SUBJECT_COLORS = [
+  { color:"blue",  fg:C.blue,  bg:C.blueBg },
+  { color:"coral", fg:C.accent, bg:C.accentBg },
+  { color:"sage",  fg:C.sage,  bg:C.sageBg },
+  { color:"plum",  fg:C.plum,  bg:C.plumBg },
+  { color:"amber", fg:C.amber, bg:C.amberBg },
+  { color:"rose",  fg:C.rose,  bg:C.roseBg },
+];
+const DEFAULT_SUBJECTS = ["Maths Methods", "English 3", "Business Studies"];
 
 // Curated starter insights shown before user has personal data
 const STARTER_INSIGHTS = [
@@ -113,6 +125,21 @@ function loadSessions() {
 function saveSessions(sessions) {
   try { localStorage.setItem("flowos_sessions", JSON.stringify(sessions)); } catch {}
 }
+function loadSubjects() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("flowos_subjects") || "null");
+    return saved && saved.length ? saved : DEFAULT_SUBJECTS;
+  } catch { return DEFAULT_SUBJECTS; }
+}
+function saveSubjects(subjects) {
+  try { localStorage.setItem("flowos_subjects", JSON.stringify(subjects)); } catch {}
+}
+// Stable color per subject name, derived from a simple hash so it stays consistent
+function colorForSubject(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) % SUBJECT_COLORS.length;
+  return SUBJECT_COLORS[Math.abs(hash)];
+}
 // Clears only Spotify auth tokens, never touches saved sessions or onboarding state
 function clearAuth() {
   localStorage.removeItem("spotify_token");
@@ -130,6 +157,10 @@ export default function FlowOS() {
   const [showCheckin, setCheckin]   = useState(false);
   const [checkinRating, setRating]  = useState(null);
   const [sessions, setSessions]     = useState([]);
+  const [subjects, setSubjects]     = useState(DEFAULT_SUBJECTS);
+  const [selectedSubject, setSelectedSubject] = useState(null);
+  const [addingSubject, setAddingSubject] = useState(false);
+  const [newSubjectName, setNewSubjectName] = useState("");
   const [justSaved, setJustSaved]   = useState(false);
   const [userProfile, setProfile]   = useState(null);
   const [onboarded, setOnboarded]   = useState(false);
@@ -137,10 +168,11 @@ export default function FlowOS() {
   const [recentTrack, setRecent]    = useState(null);
   const [showSettings, setSettings] = useState(false);
   const [pomodoroOn, setPomodoroOn] = useState(false);
-  const [pomoPhase, setPomoPhase]   = useState("work"); // "work" | "break"
+  const [pomoDuration, setPomoDuration] = useState(25 * 60); // selected length in seconds
   const [pomoRemaining, setPomoRemaining] = useState(25 * 60);
   const sessionStartRef = useRef(null);
   const pomoTimerRef = useRef(null);
+  const pomoEndRef = useRef(null); // wall-clock timestamp for when the timer should hit 0
   const timerRef = useRef(null);
   const pollRef  = useRef(null);
 
@@ -163,6 +195,7 @@ export default function FlowOS() {
       setProfile(profile);
       const saved = loadSessions();
       setSessions(saved);
+      setSubjects(loadSubjects());
       const hasOnboarded = localStorage.getItem("flowos_onboarded");
       if (!hasOnboarded) { setScreen("onboarding"); }
       else { setScreen("home"); pollTrack(); }
@@ -270,30 +303,57 @@ export default function FlowOS() {
     } catch {}
   };
 
-  // Pomodoro countdown
+  // Pomodoro countdown — wall-clock based so it corrects itself when the tab regains focus
   useEffect(() => {
     if (pomodoroOn) {
+      pomoEndRef.current = Date.now() + pomoRemaining * 1000;
       pomoTimerRef.current = setInterval(() => {
-        setPomoRemaining(r => {
-          if (r <= 1) {
-            playChime();
-            const nextPhase = pomoPhase === "work" ? "break" : "work";
-            setPomoPhase(nextPhase);
-            return nextPhase === "work" ? 25 * 60 : 5 * 60;
-          }
-          return r - 1;
-        });
+        const remaining = Math.max(0, Math.round((pomoEndRef.current - Date.now()) / 1000));
+        setPomoRemaining(remaining);
+        if (remaining <= 0) {
+          playChime();
+          setPomodoroOn(false);
+        }
       }, 1000);
     } else {
       clearInterval(pomoTimerRef.current);
     }
     return () => clearInterval(pomoTimerRef.current);
-  }, [pomodoroOn, pomoPhase]);
+  }, [pomodoroOn]);
 
-  const togglePomodoro = () => {
-    if (!pomodoroOn) { setPomoPhase("work"); setPomoRemaining(25 * 60); }
-    setPomodoroOn(!pomodoroOn);
+  // Correct countdown immediately when the tab/screen becomes visible again
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && pomodoroOn && pomoEndRef.current) {
+        const remaining = Math.max(0, Math.round((pomoEndRef.current - Date.now()) / 1000));
+        setPomoRemaining(remaining);
+        if (remaining <= 0) { playChime(); setPomodoroOn(false); }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [pomodoroOn]);
+
+  // Pause: stop the countdown in place, keeping pomoRemaining as-is
+  const togglePomodoro = () => setPomodoroOn(!pomodoroOn);
+
+  // Reset: stop and return to the currently selected duration
+  const resetPomodoro = () => {
+    setPomodoroOn(false);
+    setPomoRemaining(pomoDuration);
   };
+
+  // Switch duration preset — stops the timer and sets remaining to the new duration
+  const selectPomoDuration = (seconds) => {
+    setPomodoroOn(false);
+    setPomoDuration(seconds);
+    setPomoRemaining(seconds);
+  };
+
   const endSession = () => {
     if (sessionStartRef.current) {
       setElapsed(Math.round((Date.now() - sessionStartRef.current) / 1000));
@@ -303,12 +363,25 @@ export default function FlowOS() {
   };
 
   const submitRating = () => {
-    const newSession = { id:Date.now(), timestamp:Date.now(), track:currentTrack, duration:fmt(elapsed), rating:checkinRating, ratingLabel:RATING_CONFIG[checkinRating]?.label };
+    const newSession = { id:Date.now(), timestamp:Date.now(), track:currentTrack, duration:fmt(elapsed), rating:checkinRating, ratingLabel:RATING_CONFIG[checkinRating]?.label, subject:selectedSubject };
     const updated = [newSession, ...sessions];
     setSessions(updated);
     saveSessions(updated);
     setJustSaved(true);
-    setTimeout(() => { setCheckin(false); setRating(null); setElapsed(0); setJustSaved(false); setTab("sessions"); }, 1300);
+    setTimeout(() => { setCheckin(false); setRating(null); setElapsed(0); setJustSaved(false); setSelectedSubject(null); setAddingSubject(false); setNewSubjectName(""); setTab("sessions"); }, 1300);
+  };
+
+  const addSubject = () => {
+    const name = newSubjectName.trim();
+    if (!name) return;
+    if (!subjects.includes(name)) {
+      const updated = [...subjects, name];
+      setSubjects(updated);
+      saveSubjects(updated);
+    }
+    setSelectedSubject(name);
+    setNewSubjectName("");
+    setAddingSubject(false);
   };
 
   const deleteSession = (id) => {
@@ -429,7 +502,7 @@ export default function FlowOS() {
             <div style={{ fontSize:10, letterSpacing:4, color:C.accent, textTransform:"uppercase", fontWeight:600, marginBottom:20 }}>Quick check-in</div>
             <div style={{ fontSize:13, color:C.textMid, marginBottom:6 }}>{currentTrack.title} · {currentTrack.artist}</div>
             <h2 style={{ fontFamily:font, fontSize:26, fontWeight:700, margin:"0 0 28px", color:C.text, lineHeight:1.3 }}>How was that session?</h2>
-            <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:28 }}>
+            <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:24 }}>
               {Object.entries(RATING_CONFIG).map(([key,cfg]) => (
                 <button key={key} onClick={() => setRating(key)}
                   style={{ background:checkinRating===key?cfg.bg:"#fff", border:`1px solid ${checkinRating===key?cfg.color+"60":C.border}`, borderRadius:12, padding:"14px 18px", display:"flex", alignItems:"center", gap:12, cursor:"pointer", color:checkinRating===key?cfg.color:C.text, fontFamily:fontSans, transition:"all 0.15s" }}>
@@ -438,6 +511,42 @@ export default function FlowOS() {
                 </button>
               ))}
             </div>
+
+            <div style={{ borderTop:`1px solid ${C.borderSoft}`, paddingTop:16, marginBottom:24 }}>
+              <div style={{ fontSize:12, color:C.textMid, marginBottom:10 }}>
+                What were you working on? <span style={{ color:C.textSoft }}>(optional)</span>
+              </div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                {subjects.map(subj => {
+                  const sc = colorForSubject(subj);
+                  const active = selectedSubject === subj;
+                  return (
+                    <button key={subj} onClick={() => setSelectedSubject(active ? null : subj)}
+                      style={{ borderRadius:20, padding:"7px 14px", fontSize:13, fontWeight:500, cursor:"pointer", fontFamily:fontSans, border:active?"1px solid transparent":`1px solid ${C.border}`, background:active?sc.bg:"#fff", color:active?sc.fg:C.textMid, transition:"all 0.15s" }}>
+                      {subj}
+                    </button>
+                  );
+                })}
+                {!addingSubject ? (
+                  <button onClick={() => setAddingSubject(true)}
+                    style={{ borderRadius:20, padding:"7px 14px", fontSize:13, fontWeight:500, cursor:"pointer", fontFamily:fontSans, border:`1px solid ${C.border}`, background:"#fff", color:C.textMid }}>
+                    + Other
+                  </button>
+                ) : (
+                  <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                    <input autoFocus value={newSubjectName} onChange={e => setNewSubjectName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") addSubject(); if (e.key === "Escape") { setAddingSubject(false); setNewSubjectName(""); } }}
+                      placeholder="Subject name"
+                      style={{ borderRadius:20, padding:"7px 14px", fontSize:13, fontFamily:fontSans, border:`1px solid ${C.border}`, background:"#fff", color:C.text, outline:"none", width:120 }} />
+                    <button onClick={addSubject}
+                      style={{ borderRadius:20, padding:"7px 12px", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:fontSans, border:"none", background:C.accent, color:"#fff" }}>
+                      Add
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <button onClick={submitRating} disabled={!checkinRating}
               style={{ width:"100%", background:checkinRating?C.accent:C.surface, border:`1px solid ${checkinRating?C.accent:C.border}`, borderRadius:12, padding:"15px", color:checkinRating?"#fff":C.textSoft, fontSize:14, fontWeight:600, cursor:checkinRating?"pointer":"not-allowed", fontFamily:fontSans, transition:"all 0.2s" }}>
               Save session →
@@ -582,6 +691,10 @@ export default function FlowOS() {
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontFamily:font, fontWeight:600, fontSize:14, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{s.track.title}</div>
                         <div style={{ color:C.textSoft, fontSize:11, marginTop:2 }}>{s.timestamp ? formatSessionDate(s.timestamp) : s.date} · {s.duration}{s.track.genre ? ` · ${s.track.genre}` : ""}</div>
+                        {s.subject && (() => {
+                          const sc = colorForSubject(s.subject);
+                          return <div style={{ display:"inline-block", marginTop:5, fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:6, background:sc.bg, color:sc.fg }}>{s.subject}</div>;
+                        })()}
                       </div>
                       <div style={{ padding:"4px 10px", borderRadius:7, background:cfg?.bg, color:cfg?.color, fontSize:11, fontWeight:600, whiteSpace:"nowrap", flexShrink:0 }}>
                         {cfg?.icon} {s.ratingLabel}
@@ -670,6 +783,40 @@ export default function FlowOS() {
                     </div>
                   ))}
                 </div>
+
+                {/* Flow rate by subject — only shown if at least one session has a subject tagged */}
+                {sessions.some(s => s.subject) && (() => {
+                  const bySubject = {};
+                  sessions.forEach(s => {
+                    if (!s.subject) return;
+                    if (!bySubject[s.subject]) bySubject[s.subject] = { total:0, flow:0 };
+                    bySubject[s.subject].total += 1;
+                    if (s.rating === "deep-flow" || s.rating === "focused") bySubject[s.subject].flow += 1;
+                  });
+                  const rows = Object.entries(bySubject)
+                    .map(([subj, d]) => ({ subj, pct: Math.round((d.flow/d.total)*100), total: d.total }))
+                    .sort((a,b) => b.pct - a.pct);
+
+                  return (
+                    <div style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:16, padding:"18px 20px", marginTop:8, boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
+                      <div style={{ fontSize:13, color:C.textMid, fontWeight:500, marginBottom:16 }}>Flow rate by subject</div>
+                      {rows.map(({ subj, pct, total }) => {
+                        const sc = colorForSubject(subj);
+                        return (
+                          <div key={subj} style={{ marginBottom:10 }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+                              <div style={{ fontSize:12, color:C.textMid }}>{subj} <span style={{ color:C.textSoft }}>({total})</span></div>
+                              <div style={{ fontSize:12, color:sc.fg, fontWeight:600 }}>{pct}%</div>
+                            </div>
+                            <div style={{ height:5, background:C.surface, borderRadius:3, overflow:"hidden" }}>
+                              <div style={{ height:"100%", width:`${pct}%`, background:sc.fg, borderRadius:3, opacity:0.75 }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -765,53 +912,69 @@ Tracking how music shapes my focus with flowOS → flow-os-v1.vercel.app`;
 
         {/* Pomodoro */}
         {activeTab === "pomodoro" && (() => {
-          const totalDuration = pomoPhase === "work" ? 25 * 60 : 5 * 60;
-          const progress = 1 - pomoRemaining / totalDuration;
-          const radius = 90;
+          const progress = 1 - pomoRemaining / pomoDuration;
+          const radius = 86;
           const circumference = 2 * Math.PI * radius;
           const dashoffset = circumference * (1 - progress);
-          const phaseColor = pomoPhase === "work" ? C.accent : C.sage;
-          const phaseBg = pomoPhase === "work" ? C.accentBg : C.sageBg;
+          const DURATIONS = [
+            { label:"5 min",  value:5 * 60 },
+            { label:"15 min", value:15 * 60 },
+            { label:"25 min", value:25 * 60 },
+          ];
 
           return (
             <div style={{ padding:"20px 24px 0" }}>
               <div style={{ color:C.textSoft, fontSize:10, letterSpacing:3, textTransform:"uppercase", fontWeight:600, marginBottom:14 }}>Pomodoro</div>
 
-              <div style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:20, padding:"32px 20px", boxShadow:"0 2px 12px rgba(0,0,0,0.06)", textAlign:"center" }}>
-                <div style={{ display:"inline-block", marginBottom:6, padding:"5px 14px", borderRadius:20, background:phaseBg, color:phaseColor, fontSize:12, fontWeight:600, letterSpacing:1, textTransform:"uppercase" }}>
-                  {pomoPhase === "work" ? "Focus" : "Break"}
-                </div>
+              <div style={{ background:C.bg }}>
+                <div style={{ background:"#fff", borderRadius:18, padding:"28px 20px", boxShadow:"0 2px 12px rgba(0,0,0,0.06)" }}>
 
-                <div style={{ position:"relative", width:220, height:220, margin:"24px auto" }}>
-                  <svg width="220" height="220" viewBox="0 0 220 220" style={{ transform:"rotate(-90deg)" }}>
-                    <circle cx="110" cy="110" r={radius} fill="none" stroke={C.surface} strokeWidth="10" />
-                    <circle cx="110" cy="110" r={radius} fill="none" stroke={phaseColor} strokeWidth="10"
-                      strokeDasharray={circumference} strokeDashoffset={dashoffset} strokeLinecap="round"
-                      style={{ transition:"stroke-dashoffset 1s linear" }} />
-                  </svg>
-                  <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <div style={{ fontFamily:font, fontSize:48, fontWeight:700, color:C.text, fontVariantNumeric:"tabular-nums" }}>
-                      {fmt(pomoRemaining)}
+                  {/* Duration presets */}
+                  <div style={{ display:"flex", gap:6, marginBottom:20, background:C.bg, borderRadius:12, padding:4 }}>
+                    {DURATIONS.map(d => (
+                      <button key={d.value} onClick={() => selectPomoDuration(d.value)}
+                        style={{ flex:1, borderRadius:9, padding:"8px", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:fontSans, border:pomoDuration===d.value?`1px solid ${C.border}`:"none", background:pomoDuration===d.value?"#fff":"transparent", color:pomoDuration===d.value?C.text:C.textSoft, boxShadow:pomoDuration===d.value?"0 1px 4px rgba(0,0,0,0.06)":"none", transition:"all 0.15s" }}>
+                        {d.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Progress ring */}
+                  <div style={{ position:"relative", width:200, height:200, margin:"0 auto 20px" }}>
+                    <svg width="200" height="200" viewBox="0 0 200 200" style={{ transform:"rotate(-90deg)" }}>
+                      <circle cx="100" cy="100" r={radius} fill="none" stroke={C.bg} strokeWidth="10" />
+                      <circle cx="100" cy="100" r={radius} fill="none" stroke={C.sage} strokeWidth="10"
+                        strokeDasharray={circumference} strokeDashoffset={dashoffset} strokeLinecap="round"
+                        style={{ transition:"stroke-dashoffset 1s linear" }} />
+                      <circle cx="100" cy="100" r="64" fill={C.sageBg} />
+                    </svg>
+                    <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
+                      <div style={{ fontSize:18, color:C.sage, marginBottom:6 }}>
+                        {pomodoroOn ? "▶" : "❙❙"}
+                      </div>
+                      <div style={{ fontFamily:font, fontSize:36, fontWeight:700, color:C.text, fontVariantNumeric:"tabular-nums" }}>
+                        {fmt(pomoRemaining)}
+                      </div>
                     </div>
                   </div>
+
+                  {/* Controls */}
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={togglePomodoro}
+                      style={{ flex:1, borderRadius:12, padding:"13px", fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:fontSans, border:"none", background:C.text, color:C.bg, transition:"all 0.2s" }}>
+                      {pomodoroOn ? "Pause" : "Start"}
+                    </button>
+                    <button onClick={resetPomodoro}
+                      style={{ flex:1, borderRadius:12, padding:"13px", fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:fontSans, border:`1px solid ${C.border}`, background:"transparent", color:C.textMid }}>
+                      Reset
+                    </button>
+                  </div>
                 </div>
-
-                <button onClick={togglePomodoro}
-                  style={{ width:"100%", background:pomodoroOn?C.surface:C.accent, border:pomodoroOn?`1px solid ${C.border}`:"none", borderRadius:13, padding:"15px", color:pomodoroOn?C.textMid:"#fff", fontWeight:600, fontSize:14, cursor:"pointer", fontFamily:fontSans, transition:"all 0.2s" }}>
-                  {pomodoroOn ? "Pause" : "Start Pomodoro"}
-                </button>
-
-                {pomodoroOn && (
-                  <button onClick={() => { setPomoPhase("work"); setPomoRemaining(25*60); setPomodoroOn(false); }}
-                    style={{ width:"100%", background:"none", border:"none", borderRadius:13, padding:"10px", color:C.textSoft, fontWeight:500, fontSize:12, cursor:"pointer", fontFamily:fontSans, marginTop:4, textDecoration:"underline" }}>
-                    Reset
-                  </button>
-                )}
               </div>
 
               <div style={{ background:C.accentBg, border:`1px solid ${C.accent}30`, borderRadius:14, padding:"14px 18px", marginTop:14 }}>
                 <div style={{ color:C.textMid, fontSize:12, lineHeight:1.7 }}>
-                  25 minutes of focus, then a 5 minute break — repeating automatically. A chime plays when each phase ends. Keep this tab open for the timer and sound to keep running.
+                  Pick a length, hit start, and a chime plays when time's up. The timer keeps accurate time even if you switch tabs or your screen locks — but the chime only plays while flowOS is open.
                 </div>
               </div>
             </div>
