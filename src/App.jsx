@@ -217,6 +217,7 @@ export default function FlowOS() {
   const pollRef  = useRef(null);
   const [contextTag, setContextTag] = useState(null); // optional "what affected this session" tag
   const [showContextPrompt, setShowContextPrompt] = useState(false);
+  const [expandedSession, setExpandedSession] = useState(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -802,27 +803,60 @@ export default function FlowOS() {
               <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
                 {sessions.map(s => {
                   const cfg = RATING_CONFIG[s.rating];
+                  const trackCount = s.tracks?.length || 1;
+                  const isExpanded = expandedSession === s.id;
                   return (
-                    <div key={s.id} style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:13, padding:"13px 15px", display:"flex", alignItems:"center", gap:12, boxShadow:"0 1px 3px rgba(0,0,0,0.04)" }}>
-                      {s.track.cover
-                        ? <img src={s.track.cover} style={{ width:36, height:36, borderRadius:8, objectFit:"cover", flexShrink:0 }} alt="" />
-                        : <div style={{ fontSize:20, flexShrink:0 }}>🎵</div>
-                      }
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ fontFamily:font, fontWeight:600, fontSize:14, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{s.track.title}</div>
-                        <div style={{ color:C.textSoft, fontSize:11, marginTop:2 }}>{s.timestamp ? formatSessionDate(s.timestamp) : s.date} · {s.duration}{s.track.genre ? ` · ${s.track.genre}` : ""}</div>
-                        {s.subject && (() => {
-                          const sc = colorForSubject(s.subject);
-                          return <div style={{ display:"inline-block", marginTop:5, fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:6, background:sc.bg, color:sc.fg }}>{s.subject}</div>;
-                        })()}
+                    <div key={s.id} style={{ background:"#fff", border:`1px solid ${C.borderSoft}`, borderRadius:13, boxShadow:"0 1px 3px rgba(0,0,0,0.04)", overflow:"hidden" }}>
+                      <div onClick={() => trackCount > 1 && setExpandedSession(isExpanded ? null : s.id)}
+                        style={{ padding:"13px 15px", display:"flex", alignItems:"center", gap:12, cursor:trackCount > 1 ? "pointer" : "default" }}>
+                        {s.track.cover
+                          ? <img src={s.track.cover} style={{ width:36, height:36, borderRadius:8, objectFit:"cover", flexShrink:0 }} alt="" />
+                          : <div style={{ fontSize:20, flexShrink:0 }}>🎵</div>
+                        }
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontFamily:font, fontWeight:600, fontSize:14, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{s.track.title}</div>
+                          <div style={{ color:C.textSoft, fontSize:11, marginTop:2 }}>
+                            {s.timestamp ? formatSessionDate(s.timestamp) : s.date} · {s.duration}{s.track.genre ? ` · ${s.track.genre}` : ""}
+                            {trackCount > 1 && <span style={{ color:C.accent, fontWeight:600 }}> · +{trackCount - 1} more {trackCount === 2 ? "song" : "songs"}</span>}
+                          </div>
+                          {s.subject && (() => {
+                            const sc = colorForSubject(s.subject);
+                            return <div style={{ display:"inline-block", marginTop:5, fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:6, background:sc.bg, color:sc.fg }}>{s.subject}</div>;
+                          })()}
+                        </div>
+                        <div style={{ padding:"4px 10px", borderRadius:7, background:cfg?.bg, color:cfg?.color, fontSize:11, fontWeight:600, whiteSpace:"nowrap", flexShrink:0 }}>
+                          {cfg?.icon} {s.ratingLabel}
+                        </div>
+                        {trackCount > 1 && (
+                          <div style={{ color:C.textSoft, fontSize:12, flexShrink:0, transform:isExpanded?"rotate(180deg)":"none", transition:"transform 0.15s" }}>▾</div>
+                        )}
+                        <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }} title="Delete session"
+                          style={{ background:"none", border:"none", color:C.textSoft, fontSize:16, cursor:"pointer", padding:"2px 4px", flexShrink:0, lineHeight:1 }}>
+                          ×
+                        </button>
                       </div>
-                      <div style={{ padding:"4px 10px", borderRadius:7, background:cfg?.bg, color:cfg?.color, fontSize:11, fontWeight:600, whiteSpace:"nowrap", flexShrink:0 }}>
-                        {cfg?.icon} {s.ratingLabel}
-                      </div>
-                      <button onClick={() => deleteSession(s.id)} title="Delete session"
-                        style={{ background:"none", border:"none", color:C.textSoft, fontSize:16, cursor:"pointer", padding:"2px 4px", flexShrink:0, lineHeight:1 }}>
-                        ×
-                      </button>
+
+                      {isExpanded && trackCount > 1 && (
+                        <div style={{ borderTop:`1px solid ${C.borderSoft}`, padding:"10px 15px 12px", background:C.bg }}>
+                          <div style={{ fontSize:10, letterSpacing:2, color:C.textSoft, textTransform:"uppercase", fontWeight:600, marginBottom:8 }}>
+                            Songs played this session
+                          </div>
+                          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                            {s.tracks.map((t, i) => (
+                              <div key={t.trackId || i} style={{ display:"flex", alignItems:"center", gap:10 }}>
+                                {t.cover
+                                  ? <img src={t.cover} style={{ width:28, height:28, borderRadius:6, objectFit:"cover", flexShrink:0 }} alt="" />
+                                  : <div style={{ fontSize:14, flexShrink:0 }}>🎵</div>
+                                }
+                                <div style={{ minWidth:0, flex:1 }}>
+                                  <div style={{ fontSize:12, fontWeight:600, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{t.title}</div>
+                                  <div style={{ fontSize:10, color:C.textSoft }}>{t.artist}{t.genre ? ` · ${t.genre}` : ""}</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
